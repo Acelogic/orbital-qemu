@@ -48,6 +48,7 @@
 #include "orbital-debug-gpu.h"
 #include "orbital-procs.h"
 #include "orbital-procs-list.h"
+#include "orbital-style.h"
 
 #include <time.h>
 
@@ -57,6 +58,7 @@
 
 typedef struct OrbitalUI {
     bool active;
+    bool minimized;
     /* vulkan */
     VulkanState vk_state;
     /* sdl */
@@ -330,7 +332,7 @@ static void FrameRender(ImGui_ImplVulkanH_WindowData* wd, VulkanState* vks)
         };
         vkCmdBlitImage(fd->CommandBuffer, ui.emu_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             wd->BackBuffer[wd->FrameIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-            1, &blit, VK_FILTER_NEAREST);
+            1, &blit, VK_FILTER_LINEAR);
         {
             VkImageMemoryBarrier barrier = {
                 .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
@@ -597,6 +599,7 @@ static void* orbital_display_main(void* arg)
     ImGui_ImplVulkan_Init(&init_info, wd->RenderPass);
 
     // Setup style
+    orbital_style_initialize();
     igStyleColorsDark(NULL);
 
      // Upload Fonts
@@ -671,9 +674,10 @@ static void* orbital_display_main(void* arg)
                 event.window.windowID == SDL_GetWindowID(ui.sdl_window)) {
                 switch (event.window.event) {
                 case SDL_WINDOWEVENT_MINIMIZED:
-                    // TODO: disable all rendering while minimized (is this necessary?)
+                    ui.minimized = true;
                     break;
                 case SDL_WINDOWEVENT_MAXIMIZED:
+                    ui.minimized = false;
                 case SDL_WINDOWEVENT_RESIZED:
                 case SDL_WINDOWEVENT_EXPOSED:
                     ImGui_ImplVulkanH_CreateWindowDataSwapChainAndFramebuffer(
@@ -686,18 +690,21 @@ static void* orbital_display_main(void* arg)
                 }
             }
         }
-        // Frame
-        ImGui_ImplVulkan_NewFrame();
-        ImGui_ImplSDL2_NewFrame(ui.sdl_window);
-        igNewFrame();
+		
+        if (ui.minimized == false) {
+            // Frame
+            ImGui_ImplVulkan_NewFrame();
+            ImGui_ImplSDL2_NewFrame(ui.sdl_window);
+            igNewFrame();
 
-        // Window
-        orbital_display_draw(&ui);
+            // Window
+            orbital_display_draw(&ui);
 
-        // Rendering
-        igRender();
-        FrameRender(wd, vks);
-        FramePresent(wd, vks);
+            // Rendering
+            igRender();
+            FrameRender(wd, vks);
+            FramePresent(wd, vks);
+        }
     }
 
     err = vkDeviceWaitIdle(vks->device);

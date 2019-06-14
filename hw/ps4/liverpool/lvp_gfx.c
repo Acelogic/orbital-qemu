@@ -66,6 +66,16 @@ static void gfx_draw_common_begin(
     gfx_pipeline_t *pipeline;
     VkResult res;
     
+    if (s->pipeline != NULL) {
+        vkDestroyShaderModule(s->vk->device, s->pipeline->shader_ps.module, NULL);
+        vkDestroyShaderModule(s->vk->device, s->pipeline->shader_vs.module, NULL);
+        vkDestroyFramebuffer(s->vk->device, s->pipeline->framebuffer.vkfb, NULL);
+        vkDestroyDescriptorPool(s->vk->device, s->pipeline->vkdp, NULL);
+        vkDestroyPipelineLayout(s->vk->device, s->pipeline->vkpl, NULL);
+        vkDestroyPipeline(s->vk->device, s->pipeline->vkp, NULL);
+        free(s->pipeline);
+    }
+
     pipeline = gfx_pipeline_translate(s, vmid);
     gfx_pipeline_update(pipeline, s, vmid);
     s->pipeline = pipeline;
@@ -504,7 +514,8 @@ static uint32_t cp_handle_pm4_type3(
     // todo: This is a bit hacky for sending idle, but it at least takes care of letting orbis
     // know for now, there also *should* be some mmio register checks that 'enable' this
     // but until the emu progresses farther its tough to tell what is needed
-    liverpool_gc_ih_push_iv(s->ih, 0, IV_SRCID_UNK3_GUI_IDLE, 0);
+    if (itop == PM4_IT_DRAW_INDEX_AUTO)
+        liverpool_gc_ih_push_iv(s->ih, 0, IV_SRCID_UNK3_GUI_IDLE, 0);
     return count + 1;
 }
 
