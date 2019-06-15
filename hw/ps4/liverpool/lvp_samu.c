@@ -41,20 +41,15 @@ do { \
 } while (0)
 
 /* SAMU Secure Kernel emulation (based on 5.00) */
-#include "sam/modules/sbl_acmgr.h"
+#include "sam/modules/sbl_pupmgr.h"
 #include "sam/modules/sbl_authmgr.h"
 
-#define MODULE_ERR_OK        0x0
-#define MODULE_ERR_FFFFFFDA  0xFFFFFFDA
-#define MODULE_ERR_FFFFFFDC  0xFFFFFFDC
-#define MODULE_ERR_FFFFFFEA  0xFFFFFFEA
-
-#define MODULE_AC_MGR     "80010006"
+#define MODULE_PUP_MGR    "80010006"
 #define MODULE_AUTH_MGR   "80010008"
 #define MODULE_IDATA_MGR  "80010009"
 #define MODULE_KEY_MGR    "8001000B"
 
-#define AUTHID_AC_MGR     0x3E00000000000003ULL
+#define AUTHID_PUP_MGR    0x3E00000000000003ULL
 #define AUTHID_AUTH_MGR   0x3E00000000000005ULL
 #define AUTHID_IDATA_MGR  0x3E00000000000006ULL
 #define AUTHID_KEY_MGR    0x3E00000000000007ULL
@@ -121,22 +116,30 @@ static void samu_packet_io_write(samu_state_t *s,
     memcpy(&reply->data.io_write.data, buffer, size);
 }
 
-static void samu_packet_spawn(samu_state_t *s,
+static uint32_t samu_packet_spawn(samu_state_t *s,
     const samu_packet_t *query, samu_packet_t *reply)
 {
     const
     samu_command_service_spawn_t *query_spawn = &query->data.service_spawn;
     samu_command_service_spawn_t *reply_spawn = &reply->data.service_spawn;
-    uint64_t module_id; // TODO: The module ID is just an increasing number starting from 0, not an authentication ID
+    uint64_t module_id = 0; // TODO: The module ID is just an increasing number starting from 0, not an authentication ID
 
+    if (!strncmp(query_spawn->name, MODULE_PUP_MGR, 8)) {
+        module_id = AUTHID_PUP_MGR;
+        sbl_pupmgr_spawn();
+    }
     if (!strncmp(query_spawn->name, MODULE_AUTH_MGR, 8)) {
         module_id = AUTHID_AUTH_MGR;
     }
     if (!strncmp(query_spawn->name, MODULE_KEY_MGR, 8)) {
         module_id = AUTHID_KEY_MGR;
     }
+    if (!module_id) {
+        printf("%s: Unknown module: %s\n", __FUNCTION__, query_spawn->name);
+    }
     reply_spawn->args[0] = (uint32_t)(module_id >> 32);
     reply_spawn->args[1] = (uint32_t)(module_id);
+    return 0;
 }
 
 /* samu ccp */
@@ -307,7 +310,7 @@ static void samu_packet_ccp_snvs(samu_state_t *s,
     DPRINTF("unimplemented");
 }
 
-static void samu_packet_ccp(samu_state_t *s,
+static uint32_t samu_packet_ccp(samu_state_t *s,
     const samu_packet_t *query, samu_packet_t *reply)
 {
     const
@@ -355,54 +358,68 @@ static void samu_packet_ccp(samu_state_t *s,
         DPRINTF("Unknown SAMU CCP opcode: %d", ccp_op);
         assert(0);
     }
+    return 0;
 }
 
-static void samu_packet_mailbox(samu_state_t *s,
+static uint32_t samu_packet_mailbox(samu_state_t *s,
     const samu_packet_t *query, samu_packet_t *reply)
 {
     const
     samu_command_service_mailbox_t *query_mb = &query->data.service_mailbox;
     samu_command_service_mailbox_t *reply_mb = &reply->data.service_mailbox;
+    uint32_t ret = MODULE_ERR_OK;
 
     reply_mb->unk_00 = query_mb->unk_00;
     reply_mb->module_id = query_mb->module_id;
     reply_mb->function_id = query_mb->function_id;
-    reply_mb->retval = MODULE_ERR_OK;
 
     switch (query_mb->module_id) {
-    case AUTHID_AUTH_MGR:
+    case AUTHID_PUP_MGR:
+        if (!sbl_pupmgr_spawned()) {
+            return -3; // TODO: Maybe this is just -ESRCH
+        }
         switch (query_mb->function_id) {
-        case AUTHMGR_SM_VERIFY_HEADER:
-            sbl_authmgr_verify_header(
-                (authmgr_verify_header_t*)&query_mb->data,
-                (authmgr_verify_header_t*)&reply_mb->data);
+        case PUPMGR_SM_VERIFY_HEADER:
+            ret = sbl_pupmgr_verify_header(
+                (pupmgr_verify_header_t*)&query_mb->data,
+                (pupmgr_verify_header_t*)&reply_mb->data);
             break;
-        case AUTHMGR_SM_LOAD_SELF_SEGMENT:
-            sbl_authmgr_load_self_segment(
-                (authmgr_load_self_segment_t*)&query_mb->data,
-                (authmgr_load_self_segment_t*)&reply_mb->data);
-            break;
-        case AUTHMGR_SM_LOAD_SELF_BLOCK:
-            sbl_authmgr_load_self_block(
-                (authmgr_load_self_block_t*)&query_mb->data,
-                (authmgr_load_self_block_t*)&reply_mb->data);
-            break;
-        case AUTHMGR_SM_INVOKE_CHECK:
-            sbl_authmgr_invoke_check(
-                (authmgr_invoke_check_t*)&query_mb->data,
-                (authmgr_invoke_check_t*)&reply_mb->data);
-            break;
-        case AUTHMGR_SM_IS_LOADABLE:
-            sbl_authmgr_is_loadable(
-                (authmgr_is_loadable_t*)&query_mb->data,
-                (authmgr_is_loadable_t*)&reply_mb->data);
+        case PUPMGR_SM_EXIT:
+            ret = sbl_pupmgr_exit(
+                (pupmgr_exit_t*)&query_mb->data,
+                (pupmgr_exit_t*)&reply_mb->data);
             break;
         default:
             DPRINTF("Unknown Function ID: 0x%X", query_mb->function_id);
         }
         break;
-    case AUTHID_AC_MGR:
+    case AUTHID_AUTH_MGR:
         switch (query_mb->function_id) {
+        case AUTHMGR_SM_VERIFY_HEADER:
+            ret = sbl_authmgr_verify_header(
+                (authmgr_verify_header_t*)&query_mb->data,
+                (authmgr_verify_header_t*)&reply_mb->data);
+            break;
+        case AUTHMGR_SM_LOAD_SELF_SEGMENT:
+            ret = sbl_authmgr_load_self_segment(
+                (authmgr_load_self_segment_t*)&query_mb->data,
+                (authmgr_load_self_segment_t*)&reply_mb->data);
+            break;
+        case AUTHMGR_SM_LOAD_SELF_BLOCK:
+            ret = sbl_authmgr_load_self_block(
+                (authmgr_load_self_block_t*)&query_mb->data,
+                (authmgr_load_self_block_t*)&reply_mb->data);
+            break;
+        case AUTHMGR_SM_INVOKE_CHECK:
+            ret = sbl_authmgr_invoke_check(
+                (authmgr_invoke_check_t*)&query_mb->data,
+                (authmgr_invoke_check_t*)&reply_mb->data);
+            break;
+        case AUTHMGR_SM_IS_LOADABLE:
+            ret = sbl_authmgr_is_loadable(
+                (authmgr_is_loadable_t*)&query_mb->data,
+                (authmgr_is_loadable_t*)&reply_mb->data);
+            break;
         default:
             DPRINTF("Unknown Function ID: 0x%X", query_mb->function_id);
         }
@@ -422,9 +439,11 @@ static void samu_packet_mailbox(samu_state_t *s,
     default:
         DPRINTF("Unknown Module ID: 0x%llX", query_mb->module_id);
     }
+    reply_mb->retval = ret;
+    return 0;
 }
 
-static void samu_packet_rand(samu_state_t *s,
+static uint32_t samu_packet_rand(samu_state_t *s,
     const samu_packet_t *query, samu_packet_t *reply)
 {
     const
@@ -432,6 +451,7 @@ static void samu_packet_rand(samu_state_t *s,
     samu_command_service_rand_t *reply_rand = &query->data.service_rand; // TODO: Why is the same address reused?
 
     qcrypto_random_bytes(reply_rand->data, 0x10, &error_fatal);
+    return 0;
 }
 
 void liverpool_gc_samu_packet(samu_state_t *s,
@@ -441,6 +461,7 @@ void liverpool_gc_samu_packet(samu_state_t *s,
     samu_packet_t *query, *reply;
     hwaddr query_len = packet_length;
     hwaddr reply_len = packet_length;
+    uint32_t status = 0;
 
     reply_addr = query_addr & 0xFFF00000; // TODO: Where does this address come from?
     query = (samu_packet_t*)address_space_map(
@@ -451,26 +472,27 @@ void liverpool_gc_samu_packet(samu_state_t *s,
 
     memset(reply, 0, packet_length);
     reply->command = query->command;
-    reply->status = 0;
     reply->message_id = query->message_id;
     reply->extended_msgs = query->extended_msgs;
 
     switch (query->command) {
     case SAMU_CMD_SERVICE_SPAWN:
-        samu_packet_spawn(s, query, reply);
+        status = samu_packet_spawn(s, query, reply);
         break;
     case SAMU_CMD_SERVICE_CCP:
-        samu_packet_ccp(s, query, reply);
+        status = samu_packet_ccp(s, query, reply);
         break;
     case SAMU_CMD_SERVICE_MAILBOX:
-        samu_packet_mailbox(s, query, reply);
+        status = samu_packet_mailbox(s, query, reply);
         break;
     case SAMU_CMD_SERVICE_RAND:
-        samu_packet_rand(s, query, reply);
+        status = samu_packet_rand(s, query, reply);
         break;
     default:
         printf("Unknown SAMU command %d\n", query->command);
     }
+    reply->status = status;
+
     address_space_unmap(&address_space_memory, query, query_len, true, query_len);
     address_space_unmap(&address_space_memory, reply, reply_len, true, reply_len);
 }
